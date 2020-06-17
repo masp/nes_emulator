@@ -1,0 +1,9 @@
+[package]
+name = "parser_6502"
+version = "0.1.0"
+authors = ["Mark Asp <asp.mark.steven@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+logos = "0.11.4"
+unicase = "2.6.0"
