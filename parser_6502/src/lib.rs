@@ -1,4 +1,4 @@
-use logos::{Logos, Lexer};
+use logos::{Logos, Lexer, Span};
 use crate::Arg::Immediate;
 
 // Note: callbacks can return `Option` or `Result`
@@ -37,6 +37,8 @@ enum Token {
 
 #[derive(PartialEq, Debug)]
 enum Opcode {
+    END,
+    NOP,
     LDA,
     LDX,
     LDY,
@@ -68,15 +70,69 @@ pub struct Instruction {
     arg: Arg,
 }
 
-pub struct Program {
-    pub instructions: Vec<Instruction>
+impl Instruction {
+    pub fn end() -> Instruction {
+        Instruction {
+            op: Opcode::END,
+            arg: Arg::Implicit,
+        }
+    }
 }
 
-/*fn next_instr(lex: &mut Lexer<Token>) -> Option<Instruction> {
-    let op = lex.next()?;
-}*/
+pub struct Program {
+    pub instructions: Vec<Instruction>,
+    line: usize,
+}
+
+pub struct ParseError {
+    line: usize,
+    loc: Span,
+    error: String,
+}
+
+impl ParserError {
+    fn new(error: &str, line: usize, lexer: &Lexer<Token>) -> ParserError {
+        ParserError {
+            error: format!("Found error at {}:{} - {}\n\tContext token: {}",
+                           line, lexer.span().start, error, lexer.slice()),
+            line,
+            loc,
+        }
+    }
+
+    fn invalid_token(exp: Token, line: usize, lexer: &Lexer<Token>) -> ParserError {
+        ParserError::new(format!("expected token of type {}", exp), line, lexer)
+    }
+
+    fn unrecognized_op(line: usize, lexer: &Lexer<Token>) -> ParserError {
+        ParserError::new("unrecognized op code", line, lexer)
+    }
+}
 
 impl Program {
+    fn next_instr(&mut self, lex: &mut Lexer<Token>) -> Result<Instruction, ParserError> {
+        let op = lex.next();
+        if op.is_none() {
+            return Ok(Instruction::end());
+        }
+
+        let op = op.unwrap();
+        match op {
+            Token::Ident => {
+                let op_name = lex.slice();
+                match op_name {
+                    "ADC" => Ok(Instruction::end()),
+                    _ => Err(ParserError::unrecognized_op(self.line, lex))
+                }
+            }
+            Token::Eoi => { self.next_instr(lex) }
+            Token::Comment => { self.next_instr(lex) }
+            _ => {
+                Err(ParserError::invalid_token(Token::Ident, self.line, lex))
+            }
+        }
+    }
+
     pub fn compile(txt: &str) -> Result<Program, String> {
         let mut p = Program {
             instructions: Vec::new(),
@@ -84,12 +140,14 @@ impl Program {
 
         let mut lex = Token::lexer(txt);
         while let Some(t) = lex.next() {
-            println!("{:?} ", t);
+            println!(";
+                { : ? }
+                ", t);
         }
 
         p.instructions.push(Instruction {
             op: Opcode::LDA,
-            arg: Immediate(10)
+            arg: Immediate(10),
         });
         Ok(p)
     }
@@ -102,8 +160,10 @@ mod tests {
     #[test]
     fn it_works() {
         let p = Program::compile(concat!(
-            "ADC #$11\n",
-            "LDA $5"
+        "ADC # $11\n
+                ",
+        "LDA $ 5
+                "
         )).unwrap();
 
         assert_eq!(p.instructions, [
