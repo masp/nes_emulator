@@ -21,9 +21,4 @@ fn converts_to_string() {
 fn converts_from_string() {
     assert_eq!(Test::from_string("ABC"), Some(Test::ABC));
     assert_eq!(Test::from_string("BAD"), None);
-
-    let mut m: HashMap<UniCase<&'static str>, i32> = HashMap::new();
-    m.insert(UniCase::new("test"), 1);
-    let a = m.get(&UniCase::from("test"));
-
 }
