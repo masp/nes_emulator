@@ -35,23 +35,25 @@ fn lda_meets_spec() {
     assert_compiles!("LDA #$44", LDA, Immediate, 0x44);
     assert_compiles!("LDA $44", LDA, Zeropage, 0x44);
     assert_compiles!("LDA $44,X", LDA, ZeropageX, 0x44);
-    assert_fails!("DA $44,Y");
+    assert_fails!("LDA $44,Y");
     assert_compiles!("LDA $4400", LDA, Absolute, 0x4400);
-    assert_compiles!("LDA #$44", LDA, Immediate, 0x44);
-    assert_compiles!("LDA #$44", LDA, Immediate, 0x44);
-    assert_compiles!("LDA #$44", LDA, Immediate, 0x44);
+    assert_compiles!("LDA $4400,X", LDA, AbsoluteX, 0x4400);
+    assert_compiles!("LDA $4400,Y", LDA, AbsoluteY, 0x4400);
+    assert_compiles!("LDA ($44,X)", LDA, IndexedIndirect, 0x44);
+    assert_fails!("LDA ($4400),X");
+    assert_fails!("LDA ($44,Y)");
 
-    Immediate     LDA #$44      $A9  2   2
-    Zero Page     LDA $44       $A5  2   3
-    Zero Page,X   LDA $44,X     $B5  2   4
-    Absolute      LDA $4400     $AD  3   4
-    Absolute,X    LDA $4400,X   $BD  3   4+
-    Absolute,Y    LDA $4400,Y   $B9  3   4+
-    Indirect,X    LDA ($44,X)   $A1  2   6
-    Indirect,Y    LDA ($44),Y   $B1  2   5+
+    assert_compiles!("LDA ($44),Y", LDA, IndirectIndexed, 0x44);
+    assert_fails!("LDA ($44),X");
+    assert_fails!("LDA ($4400),Y");
+}
+
+fn compile(txt: &str) -> Vec<u8> {
+    Program::compile(txt).unwrap().dump_hex()
 }
 
 #[test]
-fn adc_meets_spec() {
-    assert_compiles!("ADC #$12", LDA, Immediate, 18);
+fn dump_hex() {
+    assert_eq!(compile("LDA #2"), [0xA9, 0x02]);
+    assert_eq!(compile("JMP ($00f0)"), [0x6C, 0xF0, 0x00]);
 }

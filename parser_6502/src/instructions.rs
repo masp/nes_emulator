@@ -1,7 +1,9 @@
 use enum_string::FromString;
+use lazy_static::lazy_static;
 
 #[derive(FromString, Clone, Copy, PartialEq, Debug)]
 pub enum Opcode {
+    ADC,
     AND,
     ASL,
     BCC,
@@ -60,7 +62,7 @@ pub enum Opcode {
     END = 64,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum Arg {
     Implicit,
     Accumulator,
@@ -77,13 +79,24 @@ pub enum Arg {
     IndirectIndexed(u8),
 }
 
-enum ArgHelper {
-    IMP, IMM, ZPG, ZPX, ZPY, REL, ABS, ABX, ABY, IND, IXI, IDI
+pub enum ArgCode {
+    IMP,
+    IMM,
+    ZPG,
+    ZPX,
+    ZPY,
+    REL,
+    ABS,
+    ABX,
+    ABY,
+    IND,
+    IXI,
+    IDI,
 }
 
-impl Into<ArgHelper> for Arg {
-    fn into(self) -> ArgHelper {
-        use ArgHelper::*;
+impl Into<ArgCode> for Arg {
+    fn into(self) -> ArgCode {
+        use ArgCode::*;
         use Arg::*;
 
         match self {
@@ -105,36 +118,99 @@ impl Into<ArgHelper> for Arg {
 
 // We use a fixed lookup table where each combination of instruction + addressing mode
 // has a unique address in the table that matches to the 16 bit value
-type OpcodeNum = u16;
-static INVALID_OPCODE: OpcodeNum = 0xFF;
+type HexOpcode = u8;
 
-struct InstrTable {
-    opcodenum_table: [OpcodeNum; 512], // 2^6 (opcode) * 2^3 (addressing mode, implicit/acc are same)
+static INVALID_OPCODE: HexOpcode = 0xFF;
+const OPCODE_TABLE_SIZE: usize = 1024; // 2^6 (opcode) * 2^4 (addressing mode, implicit/acc are same)
+
+pub struct InstrTable {
+    opcodenum_table: [HexOpcode; OPCODE_TABLE_SIZE],
 }
 
-fn conv_idx(o: Opcode, a: ArgHelper) -> usize {
-    let mut idx: usize = 0;
-    idx = o as usize;
-    idx |= (a.into() as usize) << 6;
+fn conv_idx(o: Opcode, a: ArgCode) -> u16 {
+    let idx = (o as u16) | ((a as u16) << 6);
+    assert!(idx < OPCODE_TABLE_SIZE as u16);
     idx
 }
 
 impl InstrTable {
-    pub fn lookup(&self, o: Opcode, a: Arg) -> OpcodeNum {
-        self.opcodenum_table[conv_idx(o, a.into())]
+    pub fn new() -> InstrTable {
+        InstrTable {
+            opcodenum_table: [INVALID_OPCODE; OPCODE_TABLE_SIZE]
+        }
+    }
+
+    pub fn lookup(&self, o: Opcode, a: Arg) -> Option<HexOpcode> {
+        let v = self.opcodenum_table[usize::from(conv_idx(o, a.into()))];
+        if v != INVALID_OPCODE { Some(v) } else { None }
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub struct Instruction {
+    pub op: Opcode,
+    pub arg: Arg,
+}
+
+pub enum HexInstruction {
+    Arg0(HexOpcode),
+    Arg1(HexOpcode, u8),
+    Arg2(HexOpcode, u16),
+}
+
+impl Instruction {
+    pub fn new(op: Opcode, arg: Arg) -> Instruction {
+        Instruction {
+            op,
+            arg,
+        }
+    }
+
+    pub fn end() -> Instruction {
+        Instruction {
+            op: Opcode::END,
+            arg: Arg::Implicit,
+        }
+    }
+
+    pub fn supports_mode(&self) -> bool {
+        INSTRUCT_TABLE.lookup(self.op, self.arg).is_some()
+    }
+
+    pub fn encode_as_hex(&self) -> Option<HexInstruction> {
+        let opcode = INSTRUCT_TABLE.lookup(self.op, self.arg)?;
+
+        use Arg::*;
+        Some(match self.arg {
+            Implicit | Accumulator => HexInstruction::Arg0(opcode),
+            Immediate(v) |
+            Zeropage(v) |
+            ZeropageX(v) |
+            ZeropageY(v) |
+            IndexedIndirect(v) |
+            IndirectIndexed(v) => HexInstruction::Arg1(opcode, v as u8),
+            Relative(v) => HexInstruction::Arg1(opcode, v as u8),
+            Absolute(v) |
+            AbsoluteX(v) |
+            AbsoluteY(v) |
+            Indirect(v) => HexInstruction::Arg2(opcode, v)
+        })
     }
 }
 
 macro_rules! code {
     ($table:ident, $op:ident, $ar:ident, $cd:literal) => {
-        $table.opcodenum_table[InstrTable::conv_idx(Opcode::$op, ArgHelper::$ar)] = $cd;
+        let idx = usize::from(conv_idx(Opcode::$op, ArgCode::$ar));
+        assert!($table.opcodenum_table[idx] == 0xFF);
+        $table.opcodenum_table[idx] = $cd;
     };
 }
 
 lazy_static! {
-    static ref INSTRUCT_TABLE: InstrTable = {
+    pub static ref INSTRUCT_TABLE: InstrTable = {
         let mut t = InstrTable::new();
 
+        // ALU
         code!(t, ADC, IMM, 0x69);
         code!(t, ADC, ZPG, 0x65);
         code!(t, ADC, ZPX, 0x75);
@@ -143,6 +219,15 @@ lazy_static! {
         code!(t, ADC, ABY, 0x79);
         code!(t, ADC, IXI, 0x61);
         code!(t, ADC, IDI, 0x71);
+
+        code!(t, SBC, IMM, 0xE9);
+        code!(t, SBC, ZPG, 0xE5);
+        code!(t, SBC, ZPX, 0xF5);
+        code!(t, SBC, ABS, 0xED);
+        code!(t, SBC, ABX, 0xFD);
+        code!(t, SBC, ABY, 0xF9);
+        code!(t, SBC, IXI, 0xE1);
+        code!(t, SBC, IDI, 0xF1);
 
         code!(t, AND, IMM, 0x29);
         code!(t, AND, ZPG, 0x25);
@@ -159,16 +244,168 @@ lazy_static! {
         code!(t, ASL, ABS, 0x0E);
         code!(t, ASL, ABX, 0x1E);
 
+        code!(t, BPL, REL, 0x10);
+        code!(t, BMI, REL, 0x30);
+        code!(t, BVC, REL, 0x50);
+        code!(t, BVS, REL, 0x70);
         code!(t, BCC, REL, 0x90);
         code!(t, BCS, REL, 0xB0);
+        code!(t, BNE, REL, 0xD0);
         code!(t, BEQ, REL, 0xF0);
-        code!(t, BCC, REL, 0x90);
-        code!(t, BCC, REL, 0x90);
-        code!(t, BCC, REL, 0x90);
 
         code!(t, BRK, IMP, 0x00);
+
+        code!(t, CMP, IMM, 0xC9);
+        code!(t, CMP, ZPG, 0xC5);
+        code!(t, CMP, ZPX, 0xD5);
+        code!(t, CMP, ABS, 0xCD);
+        code!(t, CMP, ABX, 0xDD);
+        code!(t, CMP, ABY, 0xD9);
+        code!(t, CMP, IXI, 0xC1);
+        code!(t, CMP, IDI, 0xD1);
+
+        code!(t, CPX, IMM, 0xE0);
+        code!(t, CPX, ZPG, 0xE4);
+        code!(t, CPX, ABS, 0xEC);
+
+        code!(t, CPY, IMM, 0xC0);
+        code!(t, CPY, ZPG, 0xC4);
+        code!(t, CPY, ABS, 0xCC);
+
+        code!(t, DEC, ZPG, 0xD6);
+        code!(t, DEC, ZPX, 0xCE);
+        code!(t, DEC, ABS, 0xDE);
+        code!(t, DEC, ABX, 0xDD);
+
+        code!(t, INC, ZPG, 0xE6);
+        code!(t, INC, ZPX, 0xF6);
+        code!(t, INC, ABS, 0xEE);
+        code!(t, INC, ABX, 0xFE);
+
+        code!(t, EOR, IMM, 0x49);
+        code!(t, EOR, ZPG, 0x45);
+        code!(t, EOR, ZPX, 0x55);
+        code!(t, EOR, ABS, 0x4D);
+        code!(t, EOR, ABX, 0x5D);
+        code!(t, EOR, ABY, 0x59);
+        code!(t, EOR, IXI, 0x41);
+        code!(t, EOR, IDI, 0x51);
+
+        // Flag Instructions
+        code!(t, CLC, IMP, 0x18);
+        code!(t, SEC, IMP, 0x38);
+        code!(t, CLI, IMP, 0x58);
+        code!(t, SEI, IMP, 0x78);
+        code!(t, CLV, IMP, 0xB8);
+        code!(t, CLD, IMP, 0xD8);
+        code!(t, SED, IMP, 0xF8);
+
+        code!(t, JMP, ABS, 0x4C);
+        code!(t, JMP, IND, 0x6C);
+
+        code!(t, JSR, ABS, 0x20);
+
+        code!(t, LDA, IMM, 0xA9);
+        code!(t, LDA, ZPG, 0xA5);
+        code!(t, LDA, ZPX, 0xB5);
+        code!(t, LDA, ABS, 0xAD);
+        code!(t, LDA, ABX, 0xBD);
+        code!(t, LDA, ABY, 0xB9);
+        code!(t, LDA, IXI, 0xA1);
+        code!(t, LDA, IDI, 0xB1);
+
+        code!(t, LDX, IMM, 0xA2);
+        code!(t, LDX, ZPG, 0xA6);
+        code!(t, LDX, ZPY, 0xB6);
+        code!(t, LDX, ABS, 0xAE);
+        code!(t, LDX, ABY, 0xBE);
+
+        code!(t, LDY, IMM, 0xA0);
+        code!(t, LDY, ZPG, 0xA4);
+        code!(t, LDY, ZPX, 0xB4);
+        code!(t, LDY, ABS, 0xAC);
+        code!(t, LDY, ABX, 0xBC);
+
+        code!(t, LSR, IMM, 0x4A);
+        code!(t, LSR, ZPG, 0x46);
+        code!(t, LSR, ZPX, 0x56);
+        code!(t, LSR, ABS, 0x4E);
+        code!(t, LSR, ABX, 0x5E);
+
         code!(t, NOP, IMP, 0xEA);
+
+        code!(t, ORA, IMM, 0x09);
+        code!(t, ORA, ZPG, 0x05);
+        code!(t, ORA, ZPX, 0x15);
+        code!(t, ORA, ABS, 0x0D);
+        code!(t, ORA, ABX, 0x1D);
+        code!(t, ORA, ABY, 0x19);
+        code!(t, ORA, IXI, 0x01);
+        code!(t, ORA, IDI, 0x11);
+
+        // Register Instructions
+        code!(t, TAX, IMP, 0xAA);
+        code!(t, TXA, IMP, 0x8A);
+        code!(t, DEX, IMP, 0xCA);
+        code!(t, INX, IMP, 0xE8);
+        code!(t, TAY, IMP, 0xA8);
+        code!(t, TYA, IMP, 0x98);
+        code!(t, DEY, IMP, 0x88);
+        code!(t, INY, IMP, 0xC8);
+
+        // Bit shifting
+        code!(t, ROL, IMP, 0x4A);
+        code!(t, ROL, ZPG, 0x46);
+        code!(t, ROL, ZPX, 0x56);
+        code!(t, ROL, ABS, 0x4E);
+        code!(t, ROL, ABX, 0x5E);
+
+        code!(t, ROR, IMP, 0x6A);
+        code!(t, ROR, ZPG, 0x66);
+        code!(t, ROR, ZPX, 0x76);
+        code!(t, ROR, ABS, 0x6E);
+        code!(t, ROR, ABX, 0x7E);
+
+        // Return
+        code!(t, RTI, IMP, 0x40);
+        code!(t, RTS, IMP, 0x60);
+
+        // Store register
+        code!(t, STA, ZPG, 0x85);
+        code!(t, STA, ZPX, 0x95);
+        code!(t, STA, ABS, 0x8D);
+        code!(t, STA, ABX, 0x9D);
+        code!(t, STA, ABY, 0x99);
+        code!(t, STA, IXI, 0x81);
+        code!(t, STA, IDI, 0x91);
+
+        code!(t, STX, ZPG, 0x86);
+        code!(t, STX, ZPY, 0x96);
+        code!(t, STX, ABS, 0x8E);
+
+        code!(t, STY, ZPG, 0x84);
+        code!(t, STY, ZPX, 0x94);
+        code!(t, STY, ABS, 0x8C);
+
+        // Stack instructions
+        code!(t, TXS, IMP, 0x9A);
+        code!(t, TSX, IMP, 0xBA);
+        code!(t, PHA, IMP, 0x48);
+        code!(t, PLA, IMP, 0x68);
+        code!(t, PHP, IMP, 0x08);
+        code!(t, PLP, IMP, 0x28);
 
         t
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_works() {
+        assert_eq!(INSTRUCT_TABLE.lookup(Opcode::ADC, Arg::Absolute(10)), Some(0x6D));
+        assert_eq!(INSTRUCT_TABLE.lookup(Opcode::ADC, Arg::Implicit), None);
+    }
 }

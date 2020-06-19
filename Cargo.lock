@@ -386,6 +386,7 @@ dependencies = [
  "bytes",
  "claim",
  "enum_string",
+ "lazy_static",
  "logos",
  "smallvec",
 ]
