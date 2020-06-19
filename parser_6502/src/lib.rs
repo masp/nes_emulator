@@ -1,4 +1,6 @@
-use enum_string::FromString;
+mod instructions;
+
+use instructions::{Arg, Opcode};
 use logos::{Logos, Lexer, Span};
 use std::convert::TryFrom;
 use smallvec::SmallVec;
@@ -41,35 +43,6 @@ enum Token {
     Eoi,
 }
 
-#[derive(FromString, Clone, Copy, PartialEq, Debug)]
-pub enum Opcode {
-    END,
-    NOP,
-    LDA,
-    LDX,
-    LDY,
-    STA,
-    STX,
-    STY,
-}
-
-#[derive(PartialEq, Debug)]
-pub enum Arg {
-    Implicit,
-    Accumulator,
-    Immediate(u8),
-    Zeropage(u8),
-    ZeropageX(u8),
-    ZeropageY(u8),
-    Relative(i8),
-    Absolute(u16),
-    AbsoluteX(u16),
-    AbsoluteY(u16),
-    Indirect(u16),
-    IndexedIndirect(u8),
-    IndirectIndexed(u8),
-}
-
 #[derive(PartialEq, Debug)]
 pub struct Instruction {
     op: Opcode,
@@ -90,8 +63,18 @@ impl Instruction {
             arg: Arg::Implicit,
         }
     }
+
+    pub fn supports_mode(&self) -> bool {
+        use Opcode::*;
+
+        match self.op {
+            NOP => self.arg == Arg::Implicit,
+            _ => false
+        }
+    }
 }
 
+#[derive(Debug)]
 pub struct Program {
     pub instructions: Vec<Instruction>,
     line: usize,
@@ -127,6 +110,10 @@ impl ParserError {
 
     fn bad_num8(v: u16, ctx: &Context) -> ParserError {
         Self::new(&format!("bad number {}, needs to be less than 256", v), ctx)
+    }
+
+    fn unsupported_mode(i: &Instruction, ctx: &Context) -> ParserError {
+        Self::new(&format!("addressing mode {:?} is not supported for this op", i.arg), ctx)
     }
 }
 
@@ -181,7 +168,12 @@ impl Program {
             if i.op == Opcode::END {
                 break;
             }
-            p.instructions.push(i);
+
+            if i.supports_mode() {
+                p.instructions.push(i);
+            } else {
+                return Err(ParserError::unsupported_mode(&i, &lex));
+            }
         }
 
         Ok(p)
