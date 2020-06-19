@@ -155,7 +155,7 @@ pub struct Instruction {
 pub enum HexInstruction {
     Arg0(HexOpcode),
     Arg1(HexOpcode, u8),
-    Arg2(HexOpcode, u16),
+    Arg2(HexOpcode, u8, u8),
 }
 
 impl Instruction {
@@ -188,12 +188,15 @@ impl Instruction {
             ZeropageX(v) |
             ZeropageY(v) |
             IndexedIndirect(v) |
-            IndirectIndexed(v) => HexInstruction::Arg1(opcode, v as u8),
+            IndirectIndexed(v) => HexInstruction::Arg1(opcode, v),
             Relative(v) => HexInstruction::Arg1(opcode, v as u8),
             Absolute(v) |
             AbsoluteX(v) |
             AbsoluteY(v) |
-            Indirect(v) => HexInstruction::Arg2(opcode, v)
+            Indirect(v) => {
+                let [a1, a2] = v.to_le_bytes();
+                HexInstruction::Arg2(opcode, a1, a2)
+            }
         })
     }
 }

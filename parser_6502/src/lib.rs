@@ -1,10 +1,9 @@
 mod instructions;
 
-pub use instructions::{Arg, ArgCode, Opcode, INSTRUCT_TABLE};
+pub use instructions::{Arg, ArgCode, Opcode, INSTRUCT_TABLE, Instruction, HexInstruction};
 use logos::{Logos, Lexer, Span};
 use std::convert::TryFrom;
 use smallvec::{SmallVec};
-use crate::instructions::{Instruction, HexInstruction};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum NumType {
@@ -134,7 +133,7 @@ impl Program {
             [Token::Num((v, nt)), Token::Comma, Token::RegY] if nt == NumType::Bit16 => Ok(Arg::AbsoluteY(v)),
 
             // JMP ($3000)
-            [Token::OpenParen, Token::Num((v, nt)), Token::CloseParen] => Ok(Arg::Indirect(v)),
+            [Token::OpenParen, Token::Num((v, _)), Token::CloseParen] => Ok(Arg::Indirect(v)),
             // LDA ($44,X)
             [Token::OpenParen, Token::Num((v, nt)), Token::Comma, Token::RegX, Token::CloseParen] if nt == NumType::Bit8 => Ok(Arg::IndexedIndirect(v as u8)),
             // LDA ($44),Y
@@ -188,7 +187,7 @@ impl Program {
 
     pub fn dump_hex(&self) -> Vec<u8> {
         let mut hex = Vec::new();
-        for i in self.instructions {
+        for i in &self.instructions {
             match i.encode_as_hex() {
                 None => continue,
                 Some(HexInstruction::Arg0(o)) => hex.push(o),
@@ -196,10 +195,9 @@ impl Program {
                     hex.push(o);
                     hex.push(a);
                 }
-                Some(HexInstruction::Arg2(o, a)) => {
-                    let [a1, a2] = a.to_be_bytes();
+                Some(HexInstruction::Arg2(o, a1, a2)) => {
                     hex.push(o);
-                    hex.push(a2);
+                    hex.push(a1);
                     hex.push(a2);
                 }
             };
