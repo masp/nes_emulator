@@ -1,6 +1,7 @@
 use enum_string::FromString;
 use logos::{Logos, Lexer, Span};
 use std::convert::TryFrom;
+use smallvec::SmallVec;
 
 fn hex_parse(lex: &mut Lexer<Token>) -> Option<u16> {
     u16::from_str_radix(&lex.slice()[1..], 16).ok() // skip '$'
@@ -136,20 +137,12 @@ impl Program {
         u8::try_from(v).map_err(|_| ParserError::bad_num8(v, ctx))
     }
 
-    fn parse_imm(&self, ctx: &mut Context) -> Result<Arg, ParserError> {
-        match ctx.next() {
-            Some(Token::Num(v)) => Ok(Arg::Immediate(self.parse_num8(v.clone(), ctx)?)),
-            _ => Err(ParserError::invalid_token(Token::Num(0), ctx))
-        }
-    }
-
     fn parse_arg(&self, ctx: &mut Context) -> Result<Arg, ParserError> {
-        let args: Vec<Token> = ctx.take_while(|t| t != &Token::Eoi).collect();
-        ctx.next(); // drop EOI token
+        let args: SmallVec<[Token; 8]> = ctx.take_while(|t| t != &Token::Eoi).collect();
 
         match &args[..] {
             &[] => Ok(Arg::Implicit),
-            &[Token::Immediate] => self.parse_imm(ctx),
+            &[Token::Immediate, Token::Num(v)] => Ok(Arg::Immediate(self.parse_num8(v, ctx)?)),
             &[Token::RegA] => Ok(Arg::Accumulator),
             &[Token::Num(v)] if v < u8::MAX.into() => Ok(Arg::Zeropage(v as u8)),
             &[Token::Num(v)] => Ok(Arg::Absolute(v)),
