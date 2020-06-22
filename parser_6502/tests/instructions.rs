@@ -24,6 +24,50 @@ macro_rules! assert_fails {
 }
 
 #[test]
+fn parses_simple_program() {
+    let p = Program::compile(concat!(
+    "LDX #$11\n",
+    "LDA $5"
+    )).unwrap();
+
+    assert_eq!(p.instructions, [
+        Instruction { op: Opcode::LDX, arg: Arg::Immediate(17) },
+        Instruction { op: Opcode::LDA, arg: Arg::Zeropage(5) }
+    ]);
+}
+
+#[test]
+fn prevents_two_byte_immediates() {
+    assert!(Program::compile("LDA #$100").is_err());
+}
+
+#[test]
+fn parses_decimal_numbers() {
+    assert_eq!(
+        Program::compile("LDA #2").unwrap().instructions,
+        [Instruction::new(Opcode::LDA, Arg::Immediate(2))]
+    );
+}
+
+#[test]
+fn ignores_comments() {
+    assert!(Program::compile("; My comment √sqrt\n   LDA #2; another comment").is_ok());
+}
+
+#[test]
+fn reads_defines() {
+    let p = Program::compile(concat!(
+    "myvar = $12\n",
+    "lda #myvar",
+    ));
+
+    assert_ok!(&p);
+    assert_eq!(&p.unwrap().instructions, &[
+        Instruction::new(Opcode::LDA, Arg::Zeropage(18))
+    ]);
+}
+
+#[test]
 fn nop_meets_spec() {
     assert_compiles!("NOP", NOP, Implicit);
     assert_fails!("NOP #$1");

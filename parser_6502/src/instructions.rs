@@ -59,7 +59,6 @@ pub enum Opcode {
     TXA,
     TXS,
     TYA,
-    END = 64,
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
@@ -146,6 +145,12 @@ impl InstrTable {
     }
 }
 
+impl Default for InstrTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(PartialEq, Debug)]
 pub struct Instruction {
     pub op: Opcode,
@@ -163,13 +168,6 @@ impl Instruction {
         Instruction {
             op,
             arg,
-        }
-    }
-
-    pub fn end() -> Instruction {
-        Instruction {
-            op: Opcode::END,
-            arg: Arg::Implicit,
         }
     }
 

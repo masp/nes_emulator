@@ -4,6 +4,7 @@ pub use instructions::{Arg, ArgCode, Opcode, INSTRUCT_TABLE, Instruction, HexIns
 use logos::{Logos, Lexer, Span};
 use std::convert::TryFrom;
 use smallvec::{SmallVec};
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum NumType {
@@ -27,7 +28,7 @@ fn dec_parse(lex: &mut Lexer<Token>) -> Option<(u16, NumType)> {
     }).ok()
 }
 
-#[derive(Logos, Debug, PartialEq)]
+#[derive(Logos, Debug, PartialEq, Copy, Clone)]
 enum Token {
     #[error]
     #[regex(r"[ \t\f]+", logos::skip)]
@@ -49,18 +50,14 @@ enum Token {
     #[token("(")] OpenParen,
     #[token(")")] CloseParen,
     #[token(",")] Comma,
+    #[token(":")] Colon,
+    #[token("=")] Equal,
 
     #[regex(r"[a-zA-Z]+")]
     Ident,
 
     #[token("\n")]
     Eoi,
-}
-
-#[derive(Debug)]
-pub struct Program {
-    pub instructions: Vec<Instruction>,
-    line: usize,
 }
 
 #[derive(Debug)]
@@ -87,10 +84,6 @@ impl ParserError {
         Self::new(&format!("expected token of type {:?}", exp), ctx)
     }
 
-    fn unrecognized_op(ctx: &Context) -> ParserError {
-        Self::new("unrecognized op code", ctx)
-    }
-
     fn bad_num8(v: u16, ctx: &Context) -> ParserError {
         Self::new(&format!("bad number {}, needs to be less than 256", v), ctx)
     }
@@ -98,23 +91,59 @@ impl ParserError {
     fn unsupported_mode(i: &Instruction, ctx: &Context) -> ParserError {
         Self::new(&format!("addressing mode {:?} is not supported for this op", i.arg), ctx)
     }
+
+    fn unrecognized_define(label: &str, ctx: &Context) -> ParserError {
+        Self::new(&format!("no define found with name {}", label), ctx)
+    }
 }
 
 type Context<'a> = Lexer<'a, Token>;
+
+#[derive(Debug)]
+pub struct Program {
+    pub instructions: Vec<Instruction>,
+    pub defines: HashMap<String, Arg>,
+    line: usize,
+}
 
 impl Program {
     fn parse_num8(&self, v: u16, ctx: &Context) -> Result<u8, ParserError> {
         u8::try_from(v).map_err(|_| ParserError::bad_num8(v, ctx))
     }
 
+    fn lookup_def(&self, name: &str, ctx: &Context) -> Result<&Arg, ParserError> {
+        self.defines.get(name).ok_or_else(|| ParserError::unrecognized_define(name, ctx))
+    }
+
+    fn parse_define(&self, ctx: &mut Context) -> Result<Arg, ParserError> {
+        if ctx.next() != Some(Token::Equal) {
+            Err(ParserError::invalid_token(Token::Equal, ctx))
+        } else {
+            self.parse_arg(ctx)
+        }
+    }
+
     fn parse_arg(&self, ctx: &mut Context) -> Result<Arg, ParserError> {
-        let args: SmallVec<[Token; 8]> = ctx.take_while(|t| t != &Token::Eoi).collect();
+        let mut args_span: SmallVec<[(Token, Span); 5]> = SmallVec::new();
+        let mut args: SmallVec<[Token; 5]> = SmallVec::new();
+        while let Some(t) = ctx.next() {
+            if t == Token::Eoi {
+                break;
+            }
+            args.push(t);
+            args_span.push((t, ctx.span()));
+        }
 
         match args[..] {
             // BRK
             [] => Ok(Arg::Implicit),
             // LDA #$12
             [Token::Immediate, Token::Num((v, NumType::Bit8))] => Ok(Arg::Immediate(self.parse_num8(v, ctx)?)),
+            // LDA #label
+            [Token::Immediate, Token::Ident] => {
+                let def_span = args_span.last().unwrap().1.clone();
+                Ok(*self.lookup_def(&ctx.source()[def_span], ctx)?)
+            },
             // ROR A
             [Token::RegA] => Ok(Arg::Accumulator),
 
@@ -143,16 +172,19 @@ impl Program {
         }
     }
 
-    fn next_instr(&self, ctx: &mut Context) -> Result<Instruction, ParserError> {
+    fn next_instr(&mut self, ctx: &mut Context) -> Result<Option<Instruction>, ParserError> {
         match Lexer::next(ctx) {
-            None => Ok(Instruction::end()),
+            None => Ok(None),
             Some(Token::Ident) => {
                 let op_name = str::to_uppercase(ctx.slice());
                 let op = Opcode::from_string(&op_name);
                 if let Some(op) = op {
-                    Ok(Instruction::new(op, self.parse_arg(ctx)?))
+                    Ok(Some(Instruction::new(op, self.parse_arg(ctx)?)))
                 } else {
-                    Err(ParserError::unrecognized_op(ctx))
+                    let define_name = ctx.slice();
+                    let define = self.parse_define(ctx)?;
+                    self.defines.insert(define_name.to_string(), define);
+                    self.next_instr(ctx)
                 }
             }
             Some(Token::Eoi) => { self.next_instr(ctx) }
@@ -165,16 +197,18 @@ impl Program {
     pub fn compile<'a>(txt: &'a str) -> Result<Program, ParserError> {
         let mut p = Program {
             instructions: Vec::new(),
+            defines: HashMap::new(),
             line: 0,
         };
 
         let mut lex: Lexer<'a, Token> = Token::lexer(txt);
         loop {
-            let i = p.next_instr(&mut lex)?;
-            if i.op == Opcode::END {
+            let instr = p.next_instr(&mut lex)?;
+            if instr.is_none() {
                 break;
             }
 
+            let i = instr.unwrap();
             if i.supports_mode() {
                 p.instructions.push(i);
             } else {
@@ -203,36 +237,5 @@ impl Program {
             };
         }
         hex
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_simple_program() {
-        let p = Program::compile(concat!(
-        "LDX #$11\n",
-        "LDA $5"
-        )).unwrap();
-
-        assert_eq!(p.instructions, [
-            Instruction { op: Opcode::LDX, arg: Arg::Immediate(17) },
-            Instruction { op: Opcode::LDA, arg: Arg::Zeropage(5) }
-        ]);
-    }
-
-    #[test]
-    fn prevents_two_byte_immediates() {
-        assert!(Program::compile("LDA #$100").is_err());
-    }
-
-    #[test]
-    fn parses_decimal_numbers() {
-        assert_eq!(
-            Program::compile("LDA #2").unwrap().instructions,
-            [Instruction::new(Opcode::LDA, Arg::Immediate(2))]
-        );
     }
 }
