@@ -53,7 +53,7 @@ enum Token {
     #[token(":")] Colon,
     #[token("=")] Equal,
 
-    #[regex(r"[a-zA-Z]+")]
+    #[regex(r"[a-zA-Z_-]+")]
     Ident,
 
     #[token("\n")]
@@ -66,17 +66,21 @@ pub struct ParserError {
     error: String,
 }
 
-fn count_lines(ctx: &Context) -> usize {
-    ctx.source()[0..ctx.span().start].matches('\n').count()
+fn count_lines(source: &str, loc: &Span) -> usize {
+    source[0..loc.start].matches('\n').count()
 }
 
 impl ParserError {
     fn new(error: &str, ctx: &Context) -> ParserError {
-        let line = count_lines(ctx);
+        Self::new_ctx(error, ctx.source(), ctx.span())
+    }
+
+    fn new_ctx(error: &str, src: &str, loc: Span) -> ParserError {
+        let line = count_lines(src, &loc);
         ParserError {
             error: format!("Found error at line {} - {}\n\tContext token: {}",
-                           line, error, ctx.slice()),
-            loc: ctx.span(),
+                           line, error, &src[loc.clone()]),
+            loc,
         }
     }
 
@@ -95,18 +99,49 @@ impl ParserError {
     fn unrecognized_define(label: &str, ctx: &Context) -> ParserError {
         Self::new(&format!("no define found with name {}", label), ctx)
     }
+
+    fn label_too_far(label: &ResolveLabelToken, u: isize, ctx: &str) -> ParserError {
+        Self::new_ctx(&format!("label '{}' is too far ({}) from call", label.label_name, u), ctx, label.src.clone())
+    }
+
+    fn unrecognized_label(label: &ResolveLabelToken, ctx: &str) -> ParserError {
+        Self::new_ctx(&format!("no label found with name {}", label.label_name), ctx, label.src.clone())
+    }
 }
 
 type Context<'a> = Lexer<'a, Token>;
 
 #[derive(Debug)]
-pub struct Program {
-    pub instructions: Vec<Instruction>,
-    pub defines: HashMap<String, Arg>,
-    line: usize,
+struct ResolveLabelToken<'a> {
+    label_name: &'a str,
+    call_byte_pos: usize,
+    src: Span,
 }
 
-impl Program {
+impl<'a> ResolveLabelToken<'a> {
+    fn new(byte_pos: usize, label_name: &'a str, src: Span) -> ResolveLabelToken<'a> {
+        ResolveLabelToken {
+            label_name,
+            call_byte_pos: byte_pos,
+            src,
+        }
+    }
+}
+
+// Line is an index into instructions
+type InstructIdx = usize;
+
+#[derive(Debug)]
+pub struct Program<'a> {
+    pub instructions: Vec<Instruction>,
+    pub defines: HashMap<&'a str, Arg>,
+    pub labels: HashMap<&'a str, usize>,
+    labels_to_resolve: HashMap<InstructIdx, ResolveLabelToken<'a>>,
+    curr_instruct_bytepos: usize,
+    idx: InstructIdx,
+}
+
+impl<'a> Program<'a> {
     fn parse_num8(&self, v: u16, ctx: &Context) -> Result<u8, ParserError> {
         u8::try_from(v).map_err(|_| ParserError::bad_num8(v, ctx))
     }
@@ -115,15 +150,28 @@ impl Program {
         self.defines.get(name).ok_or_else(|| ParserError::unrecognized_define(name, ctx))
     }
 
-    fn parse_define(&self, ctx: &mut Context) -> Result<Arg, ParserError> {
-        if ctx.next() != Some(Token::Equal) {
-            Err(ParserError::invalid_token(Token::Equal, ctx))
-        } else {
-            self.parse_arg(ctx)
-        }
+    fn lookup_label(&self, label: &ResolveLabelToken<'a>, src: &'a str) -> Result<i8, ParserError> {
+        let label_pos = self.labels.get(label.label_name).ok_or_else(|| ParserError::unrecognized_label(label, src))?;
+
+        const BRANCH_SIZE: isize = 2; /* all branch instructions are 2 bytes */
+        let dist = *label_pos as isize - (label.call_byte_pos as isize + BRANCH_SIZE);
+        i8::try_from(dist).map_err(|_| ParserError::label_too_far(label, dist, src))
     }
 
-    fn parse_arg(&self, ctx: &mut Context) -> Result<Arg, ParserError> {
+    fn insert_label(&mut self, name: &'a str) {
+        self.labels.insert(name, self.curr_instruct_bytepos);
+    }
+
+    fn parse_define(&mut self, define_name: &'a str, ctx: &mut Context<'a>) -> Result<(), ParserError> {
+        match Lexer::next(ctx) {
+            Some(Token::Equal) => { let arg = self.parse_arg(ctx)?; self.defines.insert(define_name, arg); }
+            Some(Token::Colon) => self.insert_label(define_name),
+            _ => return Err(ParserError::invalid_token(Token::Equal, ctx)),
+        };
+        Ok(())
+    }
+
+    fn parse_arg(&mut self, ctx: &mut Context<'a>) -> Result<Arg, ParserError> {
         let mut args_span: SmallVec<[(Token, Span); 5]> = SmallVec::new();
         let mut args: SmallVec<[Token; 5]> = SmallVec::new();
         while let Some(t) = ctx.next() {
@@ -149,6 +197,15 @@ impl Program {
 
             // LDA $44
             [Token::Num((v, nt))] if nt == NumType::Bit8 => Ok(Arg::Zeropage(v as u8)),
+            // BVC label
+            [Token::Ident] => {
+                let def_span = args_span.last().unwrap().1.clone();
+                let label = ResolveLabelToken::new(self.curr_instruct_bytepos,
+                                                   &ctx.source()[def_span.clone()], def_span);
+                self.labels_to_resolve.insert(self.idx, label);
+                Ok(Arg::Relative(0)) // we lazily resolve the relative offsets
+            }
+
             // LDA $44,X
             [Token::Num((v, nt)), Token::Comma, Token::RegX] if nt == NumType::Bit8 => Ok(Arg::ZeropageX(v as u8)),
             // LDA $44,Y
@@ -172,7 +229,7 @@ impl Program {
         }
     }
 
-    fn next_instr(&mut self, ctx: &mut Context) -> Result<Option<Instruction>, ParserError> {
+    fn next_instr(&mut self, ctx: &mut Context<'a>) -> Result<Option<Instruction>, ParserError> {
         match Lexer::next(ctx) {
             None => Ok(None),
             Some(Token::Ident) => {
@@ -182,8 +239,7 @@ impl Program {
                     Ok(Some(Instruction::new(op, self.parse_arg(ctx)?)))
                 } else {
                     let define_name = ctx.slice();
-                    let define = self.parse_define(ctx)?;
-                    self.defines.insert(define_name.to_string(), define);
+                    self.parse_define(define_name, ctx)?;
                     self.next_instr(ctx)
                 }
             }
@@ -194,11 +250,14 @@ impl Program {
         }
     }
 
-    pub fn compile<'a>(txt: &'a str) -> Result<Program, ParserError> {
+    pub fn compile(txt: &'a str) -> Result<Program, ParserError> {
         let mut p = Program {
             instructions: Vec::new(),
             defines: HashMap::new(),
-            line: 0,
+            labels: HashMap::new(),
+            labels_to_resolve: HashMap::new(),
+            curr_instruct_bytepos: 0,
+            idx: 0,
         };
 
         let mut lex: Lexer<'a, Token> = Token::lexer(txt);
@@ -210,10 +269,19 @@ impl Program {
 
             let i = instr.unwrap();
             if i.supports_mode() {
+                p.curr_instruct_bytepos += i.size_in_bytes();
                 p.instructions.push(i);
+                p.idx = p.instructions.len();
             } else {
                 return Err(ParserError::unsupported_mode(&i, &lex));
             }
+        }
+
+        for (k, v) in &p.labels_to_resolve {
+            let offset = Arg::Relative(p.lookup_label(&v, txt)?);
+            let mut i = p.instructions.get_mut(*k).unwrap();
+            assert_eq!(i.arg, Arg::Relative(0));
+            i.arg = offset;
         }
 
         Ok(p)

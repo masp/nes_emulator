@@ -2,6 +2,6 @@
 
 members = [
     "enum_string",
-    "parser_6502"
-
+    "parser_6502",
+    "cpu_6502",
 ]

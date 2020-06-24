@@ -8,6 +8,7 @@
       <sourceFolder url="file://$MODULE_DIR$/enum_string/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/enum_string/benches" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/parser_6502/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/cpu_6502/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/enum_string/target" />
       <excludeFolder url="file://$MODULE_DIR$/parser_6502/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />

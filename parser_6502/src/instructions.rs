@@ -78,6 +78,7 @@ pub enum Arg {
     IndirectIndexed(u8),
 }
 
+#[derive(Clone, Copy, PartialEq)]
 pub enum ArgCode {
     IMP,
     IMM,
@@ -91,6 +92,26 @@ pub enum ArgCode {
     IND,
     IXI,
     IDI,
+}
+
+impl ArgCode {
+    pub fn num_bytes(&self) -> u8 {
+        use ArgCode::*;
+        match self {
+            IMP |
+            IMM => 0,
+            ZPG |
+            ZPX |
+            ZPY |
+            REL |
+            IXI |
+            IDI => 1,
+            IND |
+            ABS |
+            ABX |
+            ABY => 2,
+        }
+    }
 }
 
 impl Into<ArgCode> for Arg {
@@ -120,10 +141,13 @@ impl Into<ArgCode> for Arg {
 type HexOpcode = u8;
 
 static INVALID_OPCODE: HexOpcode = 0xFF;
+const OPCODE_NUM_TABLE_SIZE: usize = 0xFE + 1;
+// 0xFE is largest instruction opcode num
 const OPCODE_TABLE_SIZE: usize = 1024; // 2^6 (opcode) * 2^4 (addressing mode, implicit/acc are same)
 
 pub struct InstrTable {
     opcodenum_table: [HexOpcode; OPCODE_TABLE_SIZE],
+    opcode_table: [(Opcode, ArgCode); OPCODE_NUM_TABLE_SIZE],
 }
 
 fn conv_idx(o: Opcode, a: ArgCode) -> u16 {
@@ -135,13 +159,30 @@ fn conv_idx(o: Opcode, a: ArgCode) -> u16 {
 impl InstrTable {
     pub fn new() -> InstrTable {
         InstrTable {
-            opcodenum_table: [INVALID_OPCODE; OPCODE_TABLE_SIZE]
+            opcodenum_table: [INVALID_OPCODE; OPCODE_TABLE_SIZE],
+            opcode_table: [(Opcode::NOP, ArgCode::IMM); OPCODE_NUM_TABLE_SIZE],
         }
+    }
+
+    fn update_table(&mut self, hexcode: HexOpcode, op: Opcode, arg: ArgCode) {
+        let idx = usize::from(conv_idx(op, arg));
+        assert_eq!(self.opcodenum_table[idx], 0xFF);
+        self.opcodenum_table[idx] = hexcode;
+        self.opcode_table[hexcode as usize] = (op, arg);
     }
 
     pub fn lookup(&self, o: Opcode, a: Arg) -> Option<HexOpcode> {
         let v = self.opcodenum_table[usize::from(conv_idx(o, a.into()))];
         if v != INVALID_OPCODE { Some(v) } else { None }
+    }
+
+    pub fn lookup_op(&self, code: &HexOpcode) -> Option<(Opcode, ArgCode)> {
+        let (op, arg) = self.opcode_table.get(*code as usize)?;
+        if *op == Opcode::NOP && *arg == ArgCode::IMM {
+            None
+        } else {
+            Some((*op, *arg))
+        }
     }
 }
 
@@ -164,10 +205,51 @@ pub enum HexInstruction {
 }
 
 impl Instruction {
+    pub fn from_bytes(bytes: &[u8]) -> Option<Instruction> {
+        let hex_opcode = bytes.get(0)?;
+        let (op, arg_code) = INSTRUCT_TABLE.lookup_op(hex_opcode)?;
+        let b1 = bytes.get(1).copied();
+        let b2 = bytes.get(2).copied();
+
+        use ArgCode::*;
+        use Arg::*;
+        let arg = match arg_code {
+            IMP => Implicit,
+            IMM => Immediate(b1?),
+            ZPG => Zeropage(b1?),
+            ZPX => ZeropageX(b1?),
+            ZPY => ZeropageY(b1?),
+            REL => Relative(b1? as i8),
+            IXI => IndexedIndirect(b1?),
+            IDI => IndirectIndexed(b1?),
+            IND => Indirect(u16::from_le_bytes([b1?, b2?])),
+            ABS => Absolute(u16::from_le_bytes([b1?, b2?])),
+            ABX => AbsoluteX(u16::from_le_bytes([b1?, b2?])),
+            ABY => AbsoluteY(u16::from_le_bytes([b1?, b2?]))
+        };
+        Some(Instruction::new(op, arg))
+    }
+
+    pub fn invalid() -> Instruction {
+        Instruction {
+            op: Opcode::NOP,
+            arg: Arg::Accumulator,
+        }
+    }
+
     pub fn new(op: Opcode, arg: Arg) -> Instruction {
         Instruction {
             op,
             arg,
+        }
+    }
+
+    pub fn size_in_bytes(&self) -> usize {
+        match self.encode_as_hex() {
+            Some(HexInstruction::Arg0(_)) => 1,
+            Some(HexInstruction::Arg1(_, _)) => 2,
+            Some(HexInstruction::Arg2(_, _, _)) => 3,
+            _ => 0,
         }
     }
 
@@ -201,9 +283,7 @@ impl Instruction {
 
 macro_rules! code {
     ($table:ident, $op:ident, $ar:ident, $cd:literal) => {
-        let idx = usize::from(conv_idx(Opcode::$op, ArgCode::$ar));
-        assert!($table.opcodenum_table[idx] == 0xFF);
-        $table.opcodenum_table[idx] = $cd;
+        $table.update_table($cd, Opcode::$op, ArgCode::$ar);
     };
 }
 

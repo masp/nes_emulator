@@ -97,7 +97,53 @@ fn compile(txt: &str) -> Vec<u8> {
 }
 
 #[test]
-fn dump_hex() {
+fn dumps_hex() {
     assert_eq!(compile("LDA #2"), [0xA9, 0x02]);
     assert_eq!(compile("JMP ($00f0)"), [0x6C, 0xF0, 0x00]);
+}
+
+#[test]
+fn parses_labels_before() {
+    let p = Program::compile(concat!(
+    "my_label:\n",
+    "lda #$23\n",
+    "bvc my_label"
+    ));
+
+    assert_ok!(&p);
+    assert_eq!(&p.unwrap().instructions, &[
+        Instruction::new(Opcode::LDA, Arg::Immediate(35)),
+        Instruction::new(Opcode::BVC, Arg::Relative(-4))
+    ]);
+}
+
+#[test]
+fn parses_labels_after() {
+    let p = Program::compile(concat!(
+    "lda #$23\n",
+    "bvc my_label\n",
+    "my_label:\n",
+    ));
+
+    assert_ok!(&p);
+    assert_eq!(&p.unwrap().instructions, &[
+        Instruction::new(Opcode::LDA, Arg::Immediate(35)),
+        Instruction::new(Opcode::BVC, Arg::Relative(0))
+    ]);
+}
+
+#[test]
+fn fails_label_too_far() {
+    const SIZE_OF_LDA: isize = 2;
+    let num_lda = (isize::from(i8::MAX) / SIZE_OF_LDA) + 1;
+    let lines = (0..num_lda).map(|_| "lda #$01\n").collect::<String>();
+    let pos_lines = "bvc my_label\n".to_owned() +
+        &lines +
+        "my_label:";
+    let neg_lines = "my_label:\n".to_owned() +
+        &lines +
+        "bvc my_label";
+
+    assert_err!(Program::compile(&pos_lines));
+    assert_err!(Program::compile(&neg_lines));
 }
